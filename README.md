@@ -1,2 +1,0 @@
-# ME3
-Análises
