@@ -1,7 +1,7 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
 
 # ==============================
 # ⚙️ CONFIGURAÇÕES GERAIS
@@ -10,7 +10,7 @@ st.set_page_config(page_title="Painel ME3", layout="wide")
 st.title("📊 Painel Consolidado - ME3")
 
 # ==============================
-# 🔐 LOGIN
+# 🔐 LOGIN (mantive como você tinha)
 # ==============================
 def login():
     st.sidebar.title("🔐 Login")
@@ -27,22 +27,19 @@ if "auth" not in st.session_state or not st.session_state["auth"]:
     st.stop()
 
 # ==============================
-# 📄 ARQUIVO DENTRO DO REPOSITÓRIO
-# (mesma pasta do app.py)
+# 📄 LEITURA DIRETO DO REPOSITÓRIO
+# (arquivo na mesma pasta do app.py: ME3_Node/Consolidado.xlsx)
 # ==============================
 EXCEL_FILENAME = "Consolidado.xlsx"
 
-# ==============================
-# 🔄 CARREGAR DADOS (DIRETO DO REPO)
-# ==============================
 @st.cache_data(ttl=300)
 def carregar_dados():
-    base_dir = os.path.dirname(__file__)  # pasta onde está o app.py (ME3_Node)
+    base_dir = os.path.dirname(__file__)  # pasta do app.py (ME3_Node)
     excel_path = os.path.join(base_dir, EXCEL_FILENAME)
 
     if not os.path.exists(excel_path):
-        st.error("Não foi possível carregar os dados.")
-        st.info("Verifique se o arquivo está no repositório neste caminho:")
+        st.error("Não foi possível carregar os dados (arquivo não encontrado no repositório).")
+        st.info("Caminho esperado (no Streamlit Cloud):")
         st.code(excel_path)
         return pd.DataFrame()
 
@@ -57,175 +54,337 @@ def carregar_dados():
 # ==============================
 # 🔘 BOTÃO DE ATUALIZAÇÃO
 # ==============================
-if st.button("🔄 Atualizar Dados"):
-    st.cache_data.clear()
-    st.rerun()
+col_btn, col_info = st.columns([1, 5])
+with col_btn:
+    if st.button("🔄 Atualizar Dados"):
+        st.cache_data.clear()
+        st.rerun()
 
 df = carregar_dados()
-
 if df.empty:
     st.stop()
 
 # ==============================
-# 🧹 AJUSTES DE DADOS
+# 🧹 AJUSTES / NORMALIZAÇÃO
 # ==============================
 df.columns = [c.strip() for c in df.columns]
-if "Data Fechamento" in df.columns:
-    df["Data Fechamento"] = pd.to_datetime(df["Data Fechamento"], errors="coerce")
-    # Garantir colunas numéricas
-    for col_num in ["ME3 Participação Cons", "ME3 Evento Cidade"]:
-        if col_num in df.columns:
-            df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
-    # Normalizar valores de Cidade para evitar duplicatas aparentes
-    if "Cidade" in df.columns:
-        df["Cidade"] = (
-            df["Cidade"].astype(str)
-            .str.replace("\u00a0", " ", regex=False)  # NBSP -> espaço normal
-            .str.replace(r"\s+", " ", regex=True)    # múltiplos espaços -> 1
-            .str.strip()
-            .str.upper()
-        )
-    df["Ano"] = df["Data Fechamento"].dt.year
-    df["Mês"] = df["Data Fechamento"].dt.month
-else:
+
+# Validar coluna principal de data
+if "Data Fechamento" not in df.columns:
     st.error("Coluna 'Data Fechamento' não encontrada na planilha.")
     st.stop()
 
+df["Data Fechamento"] = pd.to_datetime(df["Data Fechamento"], errors="coerce")
+
+# Normalizar Cidade
+if "Cidade" in df.columns:
+    df["Cidade"] = (
+        df["Cidade"].astype(str)
+        .str.replace("\u00a0", " ", regex=False)  # NBSP -> espaço normal
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str.upper()
+    )
+else:
+    st.error("Coluna 'Cidade' não encontrada na planilha.")
+    st.stop()
+
+# Colunas numéricas (se existirem)
+for col_num in ["ME3 Participação Cons", "ME3 Evento Cidade", "Soma de Ativos Afetados Rev."]:
+    if col_num in df.columns:
+        df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
+
+df["Ano"] = df["Data Fechamento"].dt.year
+df["Mês"] = df["Data Fechamento"].dt.month
+
+# Colunas úteis
+for must in ["Incidente", "NODE"]:
+    if must not in df.columns:
+        st.warning(f"Coluna '{must}' não encontrada. Alguns gráficos/tabela podem ficar incompletos.")
+
 # ==============================
-# 🎛️ FILTROS
+# 🎛️ FILTROS GLOBAIS (Cidade global + Ano global)
 # ==============================
-anos = sorted(df["Ano"].dropna().unique())
-meses = sorted(df["Mês"].dropna().unique())
+anos = sorted([int(a) for a in df["Ano"].dropna().unique()])
 cidades = sorted(df["Cidade"].dropna().unique())
 
-# Converter anos para inteiros e meses para nomes abreviados
-anos_int = [int(ano) for ano in anos]
-meses_nomes = []
+f1, f2 = st.columns(2)
+ano_sel = f1.selectbox("Ano (global)", anos, key="ano_global")
+
+cid_sel = f2.multiselect(
+    "Cidade (global)",
+    cidades,
+    default=cidades,
+    key="cidade_global"
+)
+
+df_base = df[(df["Ano"] == ano_sel) & (df["Cidade"].isin(cid_sel))].copy()
+if df_base.empty:
+    st.info("Sem dados para os filtros globais selecionados.")
+    st.stop()
+
+# Meses disponíveis conforme filtros globais
+meses_disponiveis = sorted([int(m) for m in df_base["Mês"].dropna().unique()])
+
 meses_abreviados = {
     1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
     7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
 }
+meses_nomes_disp = [f"{meses_abreviados[m]} ({m})" for m in meses_disponiveis]
 
-for mes in meses:
-    mes_int = int(mes)
-    meses_nomes.append(f"{meses_abreviados[mes_int]} ({mes_int})")
+def meses_para_numeros(meses_txt):
+    return [int(txt.split("(")[1].split(")")[0]) for txt in meses_txt]
 
-col1, col2, col3 = st.columns(3)
-ano_sel = col1.selectbox("Ano", anos_int)
-meses_sel = col2.multiselect("Mês", meses_nomes, default=meses_nomes)
-cid_sel = col3.multiselect("Cidade", cidades, default=cidades)
+def filtrar_por_meses(df_in, meses_txt):
+    if not meses_txt:
+        return df_in.iloc[0:0].copy()
+    meses_num = meses_para_numeros(meses_txt)
+    return df_in[df_in["Mês"].isin(meses_num)].copy()
 
-# Converter seleção de meses de volta para números
-meses_numeros = [int(txt.split("(")[1].split(")")[0]) for txt in meses_sel]
-
-df_filt = df[(df["Ano"] == ano_sel) & (df["Mês"].isin(meses_numeros)) & (df["Cidade"].isin(cid_sel))]
+def eventos_unicos_por_incidente(df_in):
+    if "Incidente" in df_in.columns:
+        return (
+            df_in.sort_values("Data Fechamento")
+            .drop_duplicates(subset=["Incidente"], keep="first")
+            .copy()
+        )
+    return df_in.copy()
 
 # ==============================
-# 📄 DATASET DE EVENTOS ÚNICOS (por Incidente)
+# 📊 CARDS (global: Ano + Cidade)
 # ==============================
-if "Incidente" in df_filt.columns:
-    df_eventos = (
-        df_filt.sort_values("Data Fechamento")
-        .drop_duplicates(subset=["Incidente"], keep="first")
-        .copy()
-    )
+st.subheader("Resumo Geral (filtros globais)")
+
+c1, c2, c3 = st.columns(3)
+
+if "Incidente" in df_base.columns:
+    c1.metric("Total de Incidentes (únicos)", int(df_base["Incidente"].nunique()))
 else:
-    df_eventos = df_filt.copy()
+    c1.metric("Total de Registros", int(len(df_base)))
 
-# Normalizar data para DIA (sem hora) para os gráficos diários
-if "Data Fechamento" in df_eventos.columns:
-    df_eventos["Dia"] = df_eventos["Data Fechamento"].dt.date
+c2.metric("Total de Cidades", int(df_base["Cidade"].nunique()))
 
-# ==============================
-# 📊 CARDS
-# ==============================
-st.subheader("Resumo Geral")
-if df_filt.empty:
-    st.info("Selecione filtros para visualizar os dados.")
-    st.stop()
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Total de Eventos", len(df_filt["Incidente"].unique()))
-col2.metric("Total de Cidades", df_filt["Cidade"].nunique())
-
-if "Soma de Ativos Afetados Rev." in df_filt.columns:
-    media_ativos = pd.to_numeric(df_filt["Soma de Ativos Afetados Rev."], errors="coerce").mean()
-    col3.metric("Média de Ativos Afetados", 0 if pd.isna(media_ativos) else int(media_ativos))
+if "Soma de Ativos Afetados Rev." in df_base.columns:
+    media_ativos = df_base["Soma de Ativos Afetados Rev."].mean()
+    c3.metric("Média de Ativos Afetados", 0 if pd.isna(media_ativos) else int(media_ativos))
 else:
-    col3.metric("Média de Ativos Afetados", 0)
+    c3.metric("Média de Ativos Afetados", 0)
+
+st.divider()
 
 # ==============================
-# 📈 GRÁFICOS
+# 📈 GRÁFICOS (cada um com filtro próprio de mês)
+# Regras:
+# - Cidade é global (df_base já vem filtrado)
+# - Cada gráfico tem seu multiselect de meses (key único)
+# - Todos os gráficos com rótulos
 # ==============================
 
-# 1️⃣ Evolução Diária ME3 Participação Cons (eventos únicos, agrupado por dia)
-if "ME3 Participação Cons" in df_eventos.columns and not df_eventos.empty:
-    st.subheader("📈 Evolução Diária ME3 Participação Cons")
-    evolucao_diaria = df_eventos.groupby("Dia")["ME3 Participação Cons"].sum().reset_index()
-    evolucao_diaria = evolucao_diaria.sort_values("Dia")
-    evolucao_diaria["ME3 Participação Cons"] = evolucao_diaria["ME3 Participação Cons"].round(2)
-    fig_evol = px.line(evolucao_diaria, x="Dia", y="ME3 Participação Cons", markers=True)
-    fig_evol.update_traces(text=evolucao_diaria["ME3 Participação Cons"], textposition="top center")
-    st.plotly_chart(fig_evol, use_container_width=True)
+# 1) Evolução diária - ME3 Participação Cons (eventos únicos por incidente)
+st.subheader("📈 Evolução Diária - ME3 Participação Cons")
+meses_g1 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g1"
+)
+df_g1 = eventos_unicos_por_incidente(filtrar_por_meses(df_base, meses_g1))
 
-st.subheader("📆 Eventos por Mês")
-eventos_mes = df_eventos.groupby(["Ano", "Mês"])["Incidente"].nunique().reset_index()
-if eventos_mes.empty:
-    st.info("Sem dados para os filtros selecionados.")
+if "ME3 Participação Cons" in df_g1.columns and not df_g1.empty:
+    df_g1["Dia"] = df_g1["Data Fechamento"].dt.date
+    evolucao = df_g1.groupby("Dia")["ME3 Participação Cons"].sum().reset_index()
+    evolucao = evolucao.sort_values("Dia")
+    evolucao["ME3 Participação Cons"] = evolucao["ME3 Participação Cons"].round(2)
+
+    fig = px.line(evolucao, x="Dia", y="ME3 Participação Cons", markers=True)
+    fig.update_traces(text=evolucao["ME3 Participação Cons"], textposition="top center")
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    fig1 = px.bar(eventos_mes, x="Mês", y="Incidente", color="Ano", barmode="group", text_auto=True)
-    fig1.update_layout(xaxis=dict(dtick=1), bargap=0.15, bargroupgap=0.1)
-    st.plotly_chart(fig1, use_container_width=True)
+    st.info("Sem dados para este gráfico (ou coluna 'ME3 Participação Cons' inexistente).")
 
-# 3️⃣ Eventos por Cidade
-st.subheader("🏙️ Eventos por Cidade")
-eventos_cid = df_eventos.groupby("Cidade")["Incidente"].nunique().reset_index()
-if eventos_cid.empty:
-    st.info("Sem dados para os filtros selecionados.")
+st.divider()
+
+# 2) Eventos por mês (incidentes únicos)
+st.subheader("📆 Incidentes por Mês (únicos)")
+meses_g2 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g2"
+)
+df_g2 = eventos_unicos_por_incidente(filtrar_por_meses(df_base, meses_g2))
+
+if "Incidente" in df_g2.columns and not df_g2.empty:
+    eventos_mes = df_g2.groupby(["Mês"])["Incidente"].nunique().reset_index()
+    eventos_mes = eventos_mes.sort_values("Mês")
+    eventos_mes["MesLabel"] = eventos_mes["Mês"].apply(lambda m: meses_abreviados[int(m)])
+
+    fig = px.bar(eventos_mes, x="MesLabel", y="Incidente", text="Incidente")
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    fig2 = px.bar(eventos_cid, x="Cidade", y="Incidente", text_auto=True)
-    st.plotly_chart(fig2, use_container_width=True)
+    st.info("Sem dados para este gráfico (ou coluna 'Incidente' inexistente).")
 
-# 4️⃣ ME3 Participação Cons por Cidade (eventos únicos)
-if "ME3 Participação Cons" in df_eventos.columns:
-    st.subheader("📊 ME3 Participação Cons por Cidade")
-    graf3 = df_eventos.groupby("Cidade")["ME3 Participação Cons"].sum().reset_index()
-    graf3["ME3 Participação Cons"] = graf3["ME3 Participação Cons"].round(2)
-    if graf3.empty:
-        st.info("Sem dados para os filtros selecionados.")
-    else:
-        fig3 = px.bar(graf3, x="Cidade", y="ME3 Participação Cons", text_auto=True)
-        fig3.update_layout(yaxis=dict(tickformat=".2f"))
-        fig3.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-        st.plotly_chart(fig3, use_container_width=True)
+st.divider()
 
-# 5️⃣ ME3 Evento Cidade por Cidade (eventos únicos)
-if "ME3 Evento Cidade" in df_eventos.columns:
-    st.subheader("🏗️ ME3 Evento Cidade por Cidade")
-    graf4 = df_eventos.groupby("Cidade")["ME3 Evento Cidade"].sum().reset_index()
-    graf4["ME3 Evento Cidade"] = graf4["ME3 Evento Cidade"].round(2)
-    if graf4.empty:
-        st.info("Sem dados para os filtros selecionados.")
-    else:
-        fig4 = px.bar(graf4, x="Cidade", y="ME3 Evento Cidade", text_auto=True)
-        fig4.update_layout(yaxis=dict(tickformat=".2f"))
-        fig4.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-        st.plotly_chart(fig4, use_container_width=True)
+# 3) Incidentes por cidade (incidentes únicos)
+st.subheader("🏙️ Incidentes por Cidade (únicos)")
+meses_g3 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g3"
+)
+df_g3 = eventos_unicos_por_incidente(filtrar_por_meses(df_base, meses_g3))
 
-# 6️⃣ Top 10 Nodes com mais repetições
-st.subheader("🔝 Top 10 Nodes com mais repetições")
-top_nodes = df_filt["NODE"].value_counts().nlargest(10).reset_index()
-top_nodes.columns = ["NODE", "Quantidade de Repetições"]
-fig5 = px.bar(top_nodes, x="NODE", y="Quantidade de Repetições", text_auto=True)
-st.plotly_chart(fig5, use_container_width=True)
+if "Incidente" in df_g3.columns and not df_g3.empty:
+    eventos_cid = df_g3.groupby("Cidade")["Incidente"].nunique().reset_index()
+    eventos_cid = eventos_cid.sort_values("Incidente", ascending=False)
 
-# 7️⃣ Solução Rev (Top 5 causas)
-if "Solução Rev." in df_filt.columns:
-    st.subheader("⚡ Top 5 Soluções Rev. mais frequentes")
-    causas = df_filt["Solução Rev."].value_counts().nlargest(5).reset_index()
+    fig = px.bar(eventos_cid, x="Cidade", y="Incidente", text="Incidente")
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Sem dados para este gráfico (ou coluna 'Incidente' inexistente).")
+
+st.divider()
+
+# 4) ME3 Participação Cons por cidade (eventos únicos)
+st.subheader("📊 ME3 Participação Cons por Cidade (eventos únicos)")
+meses_g4 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g4"
+)
+df_g4 = eventos_unicos_por_incidente(filtrar_por_meses(df_base, meses_g4))
+
+if "ME3 Participação Cons" in df_g4.columns and not df_g4.empty:
+    graf = df_g4.groupby("Cidade")["ME3 Participação Cons"].sum().reset_index()
+    graf["ME3 Participação Cons"] = graf["ME3 Participação Cons"].round(2)
+    graf = graf.sort_values("ME3 Participação Cons", ascending=False)
+
+    fig = px.bar(graf, x="Cidade", y="ME3 Participação Cons", text="ME3 Participação Cons")
+    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Sem dados para este gráfico (ou coluna 'ME3 Participação Cons' inexistente).")
+
+st.divider()
+
+# 5) ME3 Evento Cidade por cidade (eventos únicos)
+st.subheader("🏗️ ME3 Evento Cidade por Cidade (eventos únicos)")
+meses_g5 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g5"
+)
+df_g5 = eventos_unicos_por_incidente(filtrar_por_meses(df_base, meses_g5))
+
+if "ME3 Evento Cidade" in df_g5.columns and not df_g5.empty:
+    graf = df_g5.groupby("Cidade")["ME3 Evento Cidade"].sum().reset_index()
+    graf["ME3 Evento Cidade"] = graf["ME3 Evento Cidade"].round(2)
+    graf = graf.sort_values("ME3 Evento Cidade", ascending=False)
+
+    fig = px.bar(graf, x="Cidade", y="ME3 Evento Cidade", text="ME3 Evento Cidade")
+    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Sem dados para este gráfico (ou coluna 'ME3 Evento Cidade' inexistente).")
+
+st.divider()
+
+# 6) Top 10 NODES com mais repetições (aqui é em cima dos registros, não eventos únicos)
+st.subheader("🔝 Top 10 NODES com mais repetições (registros)")
+meses_g6 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g6"
+)
+df_g6 = filtrar_por_meses(df_base, meses_g6)
+
+if "NODE" in df_g6.columns and not df_g6.empty:
+    top_nodes = df_g6["NODE"].astype(str).value_counts().nlargest(10).reset_index()
+    top_nodes.columns = ["NODE", "Quantidade de Repetições"]
+
+    fig = px.bar(top_nodes, x="NODE", y="Quantidade de Repetições", text="Quantidade de Repetições")
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Sem dados para este gráfico (ou coluna 'NODE' inexistente).")
+
+st.divider()
+
+# 7) Top 5 Soluções Rev. (registros)
+st.subheader("⚡ Top 5 Soluções Rev. mais frequentes (registros)")
+meses_g7 = st.multiselect(
+    "Mês (somente este gráfico)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_g7"
+)
+df_g7 = filtrar_por_meses(df_base, meses_g7)
+
+if "Solução Rev." in df_g7.columns and not df_g7.empty:
+    causas = df_g7["Solução Rev."].astype(str).value_counts().nlargest(5).reset_index()
     causas.columns = ["Solução Rev.", "Ocorrências"]
-    fig6 = px.bar(causas, x="Solução Rev.", y="Ocorrências", text_auto=True)
-    st.plotly_chart(fig6, use_container_width=True)
+
+    fig = px.bar(causas, x="Solução Rev.", y="Ocorrências", text="Ocorrências")
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Sem dados para este gráfico (ou coluna 'Solução Rev.' inexistente).")
+
+st.divider()
+
+# ==============================
+# 📋 TABELA FINAL: Incidentes agrupados com NODES do mesmo incidente
+# (Aqui NÃO deduplicamos, porque precisamos juntar todos os NODES do incidente)
+# ==============================
+st.subheader("🧾 Incidentes agrupados com NODES envolvidos")
+
+tcol1, tcol2 = st.columns([2, 3])
+meses_tab = tcol1.multiselect(
+    "Mês (somente para esta tabela)",
+    meses_nomes_disp,
+    default=meses_nomes_disp,
+    key="meses_tabela"
+)
+buscar = tcol2.text_input("Buscar por incidente ou node", value="", key="busca_tabela")
+
+df_tab = filtrar_por_meses(df_base, meses_tab)
+
+# Validar colunas essenciais da tabela
+for c in ["Incidente", "NODE", "Cidade", "Data Fechamento"]:
+    if c not in df_tab.columns:
+        st.error(f"Coluna obrigatória para a tabela não encontrada: {c}")
+        st.stop()
+
+tabela = (
+    df_tab.groupby("Incidente")
+    .agg(
+        Data_Primeiro_Fechamento=("Data Fechamento", "min"),
+        Data_Ultimo_Fechamento=("Data Fechamento", "max"),
+        Cidades=("Cidade", lambda s: ", ".join(sorted(set(map(str, s.dropna()))))),
+        Nodes=("NODE", lambda s: ", ".join(sorted(set(map(str, s.dropna()))))),
+        Qtde_Nodes=("NODE", lambda s: len(set(map(str, s.dropna())))),
+        Registros=("NODE", "size"),
+    )
+    .reset_index()
+    .sort_values(["Qtde_Nodes", "Registros"], ascending=False)
+)
+
+if buscar.strip():
+    b = buscar.strip().upper()
+    tabela = tabela[
+        tabela["Incidente"].astype(str).str.upper().str.contains(b, na=False)
+        | tabela["Nodes"].astype(str).str.upper().str.contains(b, na=False)
+        | tabela["Cidades"].astype(str).str.upper().str.contains(b, na=False)
+    ]
+
+st.dataframe(tabela, use_container_width=True)
 
 st.success("✅ Painel carregado com sucesso!")
 
