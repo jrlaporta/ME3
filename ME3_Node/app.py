@@ -1,9 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
-import base64
-from io import StringIO, BytesIO
 import os
 
 # ==============================
@@ -30,44 +27,39 @@ if "auth" not in st.session_state or not st.session_state["auth"]:
     st.stop()
 
 # ==============================
-# 🧩 CONFIGURAÇÃO DE FONTES
+# 📄 ARQUIVO DENTRO DO REPOSITÓRIO
+# (mesma pasta do app.py)
 # ==============================
-GITHUB_TOKEN = "cole_seu_token_aqui"  # <-- cole seu token aqui
-GITHUB_REPO = "jrlaporta/ME3"
-GITHUB_FILE = "Consolidado.xlsx"
-LOCAL_PATH_XLSX = r"C:\Users\LENOVO\Desktop\ME3_Node\Consolidado.xlsx"
+EXCEL_FILENAME = "Consolidado.xlsx"
 
 # ==============================
-# 🔄 CARREGAR DADOS (GitHub → Local)
+# 🔄 CARREGAR DADOS (DIRETO DO REPO)
 # ==============================
 @st.cache_data(ttl=300)
 def carregar_dados():
-    """Tenta ler do GitHub, se falhar, usa o arquivo local."""
+    base_dir = os.path.dirname(__file__)  # pasta onde está o app.py (ME3_Node)
+    excel_path = os.path.join(base_dir, EXCEL_FILENAME)
+
+    if not os.path.exists(excel_path):
+        st.error("Não foi possível carregar os dados.")
+        st.info("Verifique se o arquivo está no repositório neste caminho:")
+        st.code(excel_path)
+        return pd.DataFrame()
+
     try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        r = requests.get(url, headers=headers)
-        if r.status_code == 200:
-            content = r.json()["content"]
-            decoded_bytes = base64.b64decode(content)
-            # Leitura como XLSX do GitHub
-            df = pd.read_excel(BytesIO(decoded_bytes))
-            return df
-        else:
-            raise Exception()
-    except Exception:
-        if os.path.exists(LOCAL_PATH_XLSX):
-            df = pd.read_excel(LOCAL_PATH_XLSX)
-            return df
-        else:
-            st.error("Não foi possível carregar os dados.")
-            return pd.DataFrame()
+        df = pd.read_excel(excel_path, engine="openpyxl")
+        return df
+    except Exception as e:
+        st.error("Falha ao ler a planilha Excel.")
+        st.exception(e)
+        return pd.DataFrame()
 
 # ==============================
 # 🔘 BOTÃO DE ATUALIZAÇÃO
 # ==============================
 if st.button("🔄 Atualizar Dados"):
     st.cache_data.clear()
+    st.rerun()
 
 df = carregar_dados()
 
@@ -109,8 +101,10 @@ cidades = sorted(df["Cidade"].dropna().unique())
 # Converter anos para inteiros e meses para nomes abreviados
 anos_int = [int(ano) for ano in anos]
 meses_nomes = []
-meses_abreviados = {1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
-                   7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"}
+meses_abreviados = {
+    1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
+    7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
+}
 
 for mes in meses:
     mes_int = int(mes)
@@ -128,8 +122,6 @@ df_filt = df[(df["Ano"] == ano_sel) & (df["Mês"].isin(meses_numeros)) & (df["Ci
 
 # ==============================
 # 📄 DATASET DE EVENTOS ÚNICOS (por Incidente)
-# Regra: manter APENAS um registro por Incidente (primeira ocorrência),
-#        depois agregamos por dia/cidade/etc. sem inflar valores.
 # ==============================
 if "Incidente" in df_filt.columns:
     df_eventos = (
@@ -151,9 +143,11 @@ st.subheader("Resumo Geral")
 if df_filt.empty:
     st.info("Selecione filtros para visualizar os dados.")
     st.stop()
+
 col1, col2, col3 = st.columns(3)
 col1.metric("Total de Eventos", len(df_filt["Incidente"].unique()))
 col2.metric("Total de Cidades", df_filt["Cidade"].nunique())
+
 if "Soma de Ativos Afetados Rev." in df_filt.columns:
     media_ativos = pd.to_numeric(df_filt["Soma de Ativos Afetados Rev."], errors="coerce").mean()
     col3.metric("Média de Ativos Afetados", 0 if pd.isna(media_ativos) else int(media_ativos))
@@ -201,8 +195,8 @@ if "ME3 Participação Cons" in df_eventos.columns:
         st.info("Sem dados para os filtros selecionados.")
     else:
         fig3 = px.bar(graf3, x="Cidade", y="ME3 Participação Cons", text_auto=True)
-        fig3.update_layout(yaxis=dict(tickformat='.2f'))
-        fig3.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+        fig3.update_layout(yaxis=dict(tickformat=".2f"))
+        fig3.update_traces(texttemplate="%{text:.2f}", textposition="outside")
         st.plotly_chart(fig3, use_container_width=True)
 
 # 5️⃣ ME3 Evento Cidade por Cidade (eventos únicos)
@@ -214,8 +208,8 @@ if "ME3 Evento Cidade" in df_eventos.columns:
         st.info("Sem dados para os filtros selecionados.")
     else:
         fig4 = px.bar(graf4, x="Cidade", y="ME3 Evento Cidade", text_auto=True)
-        fig4.update_layout(yaxis=dict(tickformat='.2f'))
-        fig4.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+        fig4.update_layout(yaxis=dict(tickformat=".2f"))
+        fig4.update_traces(texttemplate="%{text:.2f}", textposition="outside")
         st.plotly_chart(fig4, use_container_width=True)
 
 # 6️⃣ Top 10 Nodes com mais repetições
@@ -234,3 +228,4 @@ if "Solução Rev." in df_filt.columns:
     st.plotly_chart(fig6, use_container_width=True)
 
 st.success("✅ Painel carregado com sucesso!")
+
